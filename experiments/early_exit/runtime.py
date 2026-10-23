@@ -131,15 +131,38 @@ class LoopVLProbe:
                 end = min(offset + chunk_size, len(reference))
                 h1 = self.model.language_model.lm_head(early[0, start+offset:start+end]).float()
                 h2 = self.model.language_model.lm_head(final[0, start+offset:start+end]).float()
-                probabilities = h1.softmax(-1)
-                top = probabilities.topk(2, dim=-1)
-                final_ids = h2.argmax(-1).tolist()
-                values, indices = top.values.tolist(), top.indices.tolist()
-                for local in range(end-offset):
+                from .readout_metrics import measure_readouts
+                measured = measure_readouts(h1, h2, reference[offset:end])
+                for local, row in enumerate(measured):
                     pos = offset + local
-                    rows.append({"position": pos, "reference_id": reference[pos],
-                                 "h1_id": indices[local][0], "h2_id": final_ids[local],
-                                 "h1_confidence": values[local][0],
-                                 "h1_probability_margin": values[local][0]-values[local][1],
-                                 "confidence_threshold": threshold})
+                    a, b = early[0, start+pos].float(), final[0, start+pos].float()
+                    row.update(
+                        position=pos, stage="H1", is_eos=reference[pos] == self.tokenizer.eos_token_id,
+                        h1_id=row["early_id"], h2_id=row["final_id"],
+                        h1_confidence=row["early_confidence"],
+                        h1_probability_margin=row["early_probability_margin"],
+                        confidence_threshold=threshold,
+                        early_hidden_rms=float(a.square().mean().sqrt().item()),
+                        final_hidden_rms=float(b.square().mean().sqrt().item()),
+                        hidden_cosine=float(t.nn.functional.cosine_similarity(a, b, dim=0).item()),
+                    )
+                    for field in ("reference_id", "early_id", "final_id"):
+                        row[field.replace("_id", "_text")] = self.tokenizer.decode([row[field]], skip_special_tokens=False)
+                    row["early_top10_text"] = [self.tokenizer.decode([i], skip_special_tokens=False) for i in row["early_top10_ids"]]
+                    rows.append(row)
         return rows
+
+    def check_h1_prefixes(self, reference, rows, limit):
+        """Compare H1-only execution with H1 captured during a full causal replay.
+
+        Prefix j contains reference[:j], never the token being predicted or its suffix.
+        Different matrix shapes may produce BF16 top-1 changes; report and stop by default.
+        """
+        from .readout_metrics import select_positions
+        result = []
+        for pos in select_positions(len(reference), limit):
+            token = self.propose(reference[:pos])
+            result.append({"position": pos, "shallow_id": token,
+                           "captured_h1_id": rows[pos]["h1_id"],
+                           "matches": token == rows[pos]["h1_id"]})
+        return result

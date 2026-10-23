@@ -90,3 +90,39 @@ python -m unittest experiments.early_exit.test_runtime_contract -v
 这些测试不需要 torch；runtime contract 测试需要 numpy。覆盖依赖历史的
 toy target、错误传播、首拒绝、全接受 bonus、EOS、输出预算，以及H1提前停止、
 异常后的hook清理和PrefixLM mask。实际模型测试需服务器权重/GPU。
+
+## Expanded H1/H2 readout diagnostic
+
+```bash
+.venv/bin/python -m experiments.early_exit.make_readout_samples --output runs/readout_inputs_new
+.venv/bin/python -m experiments.early_exit.probe \
+  --model-dir "$HOME/LMM/lmm_model/LoopVL" \
+  --input runs/readout_inputs_new/samples.jsonl \
+  --output runs/readout_probe_new --device cuda:0 --limit 20 --max-new-tokens 32
+```
+
+Creates **10 unique synthetic images, 20 questions**: five charts and five counting
+images, each with a short-answer and descriptive question. No natural-image data
+or benchmark accuracy claim. Longer prompts need not yield long answers; actual
+generated lengths are saved. Output/input directories must be new.
+
+The checkpoint's H2L3 schedule is unchanged: LLLHLLLH, 16 layers per stack call;
+H1 follows application 64 and H2 follows application 128 (excluding vision).
+This is two high cycles, not two Transformer layers. Further H cycles would
+change the target model and are outside this diagnostic.
+
+The probe now records decoded tokens including EOS, H2 confidence, the H2 token's
+rank/probability in H1, Top-5/10 membership, hidden RMS/cosine, and top candidates.
+`readout_summary.json` separates all/content/EOS/first positions; `summary.json`
+retains the previous aggregates. H2 is not a ground-truth answer; these are
+readout agreements, not answer accuracy or speculative acceptance rates.
+
+By default up to four evenly spaced positions per sample additionally run H1-only
+on the exact available reference prefix (never the predicted token or its suffix).
+`h1_prefix_checks.jsonl` compares that top-1 with the H1 captured during causal
+full-sequence replay. A mismatch stops the run; inspect masking and BF16 shape
+sensitivity before interpreting it. `--check-h1-positions 0` disables checks and
+`--allow-replay-mismatch` permits diagnostic continuation while retaining records.
+No threshold is lowered to manufacture confidence. No speedup is reported.
+
+CPU tests: `python -m unittest experiments.early_exit.test_readout_metrics -v`.

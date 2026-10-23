@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 
 from .core import draft_verify, summarize
+from .readout_metrics import summarize_readouts
 
 
 def load_samples(path: Path, image_root: Path | None, limit: int):
@@ -51,12 +52,13 @@ def main(mode: str):
     parser.add_argument("--limit", type=int, default=8, help="0 means all samples")
     parser.add_argument("--max-new-tokens", type=int, default=128)
     parser.add_argument("--logit-chunk-size", type=int, default=8)
+    parser.add_argument("--check-h1-positions", type=int, default=4, help="H1-only prefix checks per sample; 0 disables")
     parser.add_argument("--confidence-threshold", type=float, default=0.9)
     parser.add_argument("--allow-replay-mismatch", action="store_true", help="Continue diagnostics; still report mismatches")
     if mode == "draft_verify":
         parser.add_argument("--draft-lengths", type=int, nargs="+", default=[1, 2, 4])
     args = parser.parse_args()
-    if args.limit < 0 or args.max_new_tokens < 1 or args.logit_chunk_size < 1:
+    if args.check_h1_positions < 0 or args.limit < 0 or args.max_new_tokens < 1 or args.logit_chunk_size < 1:
         parser.error("Require limit >= 0 and positive token/chunk budgets")
     if not 0 <= args.confidence_threshold <= 1:
         parser.error("confidence threshold must be in [0,1]")
@@ -96,8 +98,15 @@ def main(mode: str):
             if rows:
                 if writer is None:
                     writer = csv.DictWriter(tf, fieldnames=list(rows[0])); writer.writeheader()
-                writer.writerows(rows); tf.flush()
+                writer.writerows({k: json.dumps(v, ensure_ascii=False) if isinstance(v, (list, dict)) else v for k,v in row.items()} for row in rows); tf.flush()
+            checks = runtime.check_h1_prefixes(reference, rows, args.check_h1_positions)
+            with (args.output / "h1_prefix_checks.jsonl").open("a", encoding="utf-8") as cf:
+                cf.write(json.dumps({"id": sample["id"], "checks": checks}, ensure_ascii=False)+"\n")
             all_rows.extend(rows)
+            (args.output / "readout_summary.json").write_text(
+                json.dumps(summarize_readouts(all_rows), ensure_ascii=False, indent=2), encoding="utf-8")
+            if any(not check["matches"] for check in checks) and not args.allow_replay_mismatch:
+                raise RuntimeError(f"{sample['id']}: H1-only versus replay mismatch; inspect h1_prefix_checks.jsonl (masking or BF16 shape effects)")
             mismatches = sum(r["h2_id"] != r["reference_id"] for r in rows)
             summary = summarize(all_rows, generations)
             (args.output / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -122,7 +131,7 @@ def main(mode: str):
                     if tokens != reference:
                         raise RuntimeError(f"{sample['id']}: draft length {length} diverged from official greedy output")
         (args.output / "COMPLETE.json").write_text(json.dumps({"samples": len(generations), "mode": mode}), encoding="utf-8")
-    print(json.dumps(summarize(all_rows, generations), ensure_ascii=False, indent=2))
+    print(json.dumps(summarize_readouts(all_rows), ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":
