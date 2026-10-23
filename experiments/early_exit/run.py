@@ -72,7 +72,8 @@ def main(mode: str):
         revision = None
     settings = {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()}
     settings.update(mode=mode, revision=revision, selected_samples=len(samples),
-                    timing_scope="diagnostic recomputation only; no speedup claim", use_cache=False)
+                    timing_scope="diagnostic recomputation only; no speedup claim", use_cache=False,
+                    readout_schema_version=2, greedy_readout="argmax on logits, not topk tie order")
     (args.output / "settings.json").write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
     from .runtime import LoopVLProbe
     runtime = LoopVLProbe(args.model_dir, args.device)

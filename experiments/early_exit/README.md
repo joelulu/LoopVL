@@ -126,3 +126,10 @@ sensitivity before interpreting it. `--check-h1-positions 0` disables checks and
 No threshold is lowered to manufacture confidence. No speedup is reported.
 
 CPU tests: `python -m unittest experiments.early_exit.test_readout_metrics -v`.
+
+Readout schema v2 fixes a diagnostic bug: greedy IDs now use logits.argmax,
+matching actual decoding. torch.topk may choose a different ID among tied maxima;
+its ordering must not define Top-1 agreement. This could falsely lower Ouro
+cycle4 self-agreement and falsely fail LoopVL H1 prefix checks. Top-5/10 still
+use actual topk candidate sets; tied boundary membership can be arbitrary.
+Rerun diagnostics into a new output directory; weights and inputs are unchanged.
